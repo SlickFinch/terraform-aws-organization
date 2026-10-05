@@ -1,0 +1,5 @@
+[tools]
+opentofu = "1.13.1"
+tflint = "0.64.0"
+terraform-docs = "0.24.0"
+pre-commit = "latest"
