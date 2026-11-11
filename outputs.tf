@@ -63,3 +63,13 @@ output "policies" {
   description = "Policies keyed by name: id, arn and type."
   value       = { for k, p in aws_organizations_policy.this : k => { id = p.id, arn = p.arn, type = p.type } }
 }
+
+output "control_tower_landing_zone_arn" {
+  description = "ARN of the Control Tower landing zone, or null when control_tower is null."
+  value       = try(aws_controltower_landing_zone.this[0].arn, null)
+}
+
+output "control_tower_latest_available_version" {
+  description = "Newest landing zone version AWS offers. Compare it with control_tower.version to plan upgrades."
+  value       = try(aws_controltower_landing_zone.this[0].latest_available_version, null)
+}
