@@ -50,12 +50,43 @@ See [examples/complete](examples/complete) for every feature.
 - **Trusted access.** Each principal in `aws_service_access_principals` is its own `aws_organizations_aws_service_access` resource. The Organization ignores `aws_service_access_principals`, so services that enable their own access, such as Control Tower, don't cause drift.
 - **Delegated administrators.** Map a service principal to an account key or account ID.
 - **Alternate contacts** apply to every account the module manages. They need trusted access for `account.amazonaws.com`.
+- **RAM sharing.** `enable_ram_sharing_with_organization = true` lets accounts share resources, such as a Transit Gateway, with the Organization without invitations. It also turns on RAM trusted access.
+- **Control Tower.** Set `control_tower` to create a landing zone without AFT. The module creates the three service roles AWS needs first (`AWSControlTowerAdmin`, `AWSControlTowerCloudTrailRole` and `AWSControlTowerStackSetRole`, unless `create_service_roles = false`), then the landing zone, then a baseline for each OU in `registered_ous` and, after those, `registered_child_ous`. Control Tower registers the security OU itself. The manifest's log archive and audit accounts must be accounts of this module in `security_ou`, or the plan fails.
 
 ## Safety
 
 - The Organization and every account have `prevent_destroy`. Removing an account from `accounts` fails the plan. To remove or close an account, take it out of state on purpose (`tofu state rm`), then close or remove it in AWS.
 - `iam_user_access_to_billing` and `role_name` apply only when an account is created. AWS can't read them back, so the module ignores later changes, and imported accounts don't show a diff.
 - `close_on_deletion` defaults to `false`.
+- The Control Tower landing zone has `prevent_destroy`. Decommissioning it is a manual job in the console.
+
+## Control Tower example
+
+```hcl
+module "organization" {
+  source = "git::https://github.com/SlickFinch/terraform-aws-organization.git?ref=v1.1.0"
+
+  # ... organizational_units and accounts, with log-archive and audit in Security ...
+
+  enable_ram_sharing_with_organization = true
+
+  control_tower = {
+    version = "4.0"
+    manifest = {
+      governedRegions    = ["us-east-1", "us-west-2"]
+      accessManagement   = { enabled = false }
+      centralizedLogging = { enabled = true, accountId = "<log archive account ID>" }
+      config             = { enabled = true, accountId = "<audit account ID>" }
+      securityRoles      = { enabled = true, accountId = "<audit account ID>" }
+    }
+    baseline_arn         = "arn:aws:controltower:us-west-2::baseline/17BSJV3IGJ2QSGA2"
+    registered_ous       = ["Infrastructure", "Workloads"]
+    registered_child_ous = ["Prod", "NonProd"]
+  }
+}
+```
+
+Read the account IDs from `module.organization.account_ids`. Control Tower sorts `governedRegions`, so sort them in the manifest too, or every plan shows a change.
 
 ## Import an existing Organization
 
@@ -113,13 +144,20 @@ Releases follow [semantic versioning](https://semver.org). Each release is a `vM
 
 ## Modules
 
-No modules.
+| Name | Source | Version |
+| ---- | ------ | ------- |
+| <a name="module_control_tower_admin_role"></a> [control\_tower\_admin\_role](#module\_control\_tower\_admin\_role) | terraform-aws-modules/iam/aws//modules/iam-role | ~> 6.8 |
+| <a name="module_control_tower_cloudtrail_role"></a> [control\_tower\_cloudtrail\_role](#module\_control\_tower\_cloudtrail\_role) | terraform-aws-modules/iam/aws//modules/iam-role | ~> 6.8 |
+| <a name="module_control_tower_stackset_role"></a> [control\_tower\_stackset\_role](#module\_control\_tower\_stackset\_role) | terraform-aws-modules/iam/aws//modules/iam-role | ~> 6.8 |
 
 ## Resources
 
 | Name | Type |
 | ---- | ---- |
 | [aws_account_alternate_contact.this](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/account_alternate_contact) | resource |
+| [aws_controltower_baseline.child_ous](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/controltower_baseline) | resource |
+| [aws_controltower_baseline.top_level_ous](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/controltower_baseline) | resource |
+| [aws_controltower_landing_zone.this](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/controltower_landing_zone) | resource |
 | [aws_organizations_account.this](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/organizations_account) | resource |
 | [aws_organizations_aws_service_access.this](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/organizations_aws_service_access) | resource |
 | [aws_organizations_delegated_administrator.this](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/organizations_delegated_administrator) | resource |
@@ -132,6 +170,7 @@ No modules.
 | [aws_organizations_policy.this](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/organizations_policy) | resource |
 | [aws_organizations_policy_attachment.this](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/organizations_policy_attachment) | resource |
 | [aws_organizations_resource_policy.this](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/organizations_resource_policy) | resource |
+| [aws_ram_sharing_with_organization.this](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/ram_sharing_with_organization) | resource |
 | [terraform_data.ou_depth_check](https://registry.terraform.io/providers/hashicorp/terraform/latest/docs/resources/data) | resource |
 
 ## Inputs
@@ -142,7 +181,9 @@ No modules.
 | <a name="input_accounts"></a> [accounts](#input\_accounts) | Member accounts keyed by account name.<br/>- email: full email address. If null, the module builds it from account\_email\_format.<br/>- email\_alias: value put into account\_email\_format. Defaults to the map key.<br/>- name: account name. Defaults to the map key.<br/>- parent: key of an OU in organizational\_units. parent\_id: an OU or root ID managed elsewhere. If both are null, the account goes under the root.<br/>- close\_on\_deletion: close the account when the resource is destroyed. Accounts also have prevent\_destroy.<br/>- iam\_user\_access\_to\_billing and role\_name only apply at creation. The module ignores later changes, so imported accounts don't show a diff. | <pre>map(object({<br/>    email                      = optional(string)<br/>    email_alias                = optional(string)<br/>    name                       = optional(string)<br/>    parent                     = optional(string)<br/>    parent_id                  = optional(string)<br/>    close_on_deletion          = optional(bool, false)<br/>    iam_user_access_to_billing = optional(string)<br/>    role_name                  = optional(string)<br/>    tags                       = optional(map(string), {})<br/>  }))</pre> | `{}` | no |
 | <a name="input_alternate_contacts"></a> [alternate\_contacts](#input\_alternate\_contacts) | Alternate contacts (BILLING, OPERATIONS, SECURITY) set on every account this module manages. Needs trusted access for account.amazonaws.com. | <pre>map(object({<br/>    name          = string<br/>    title         = string<br/>    email_address = string<br/>    phone_number  = string<br/>  }))</pre> | `{}` | no |
 | <a name="input_aws_service_access_principals"></a> [aws\_service\_access\_principals](#input\_aws\_service\_access\_principals) | Service principals to give trusted access to the Organization, for example sso.amazonaws.com. Each one is its own resource, so services that enable their own access (Control Tower, for example) don't cause drift. | `list(string)` | `[]` | no |
+| <a name="input_control_tower"></a> [control\_tower](#input\_control\_tower) | Control Tower landing zone without AFT. null (the default) leaves Control Tower off.<br/>version: landing zone version, for example 4.0. manifest: the landing zone manifest as an object (it is JSON-encoded).<br/>remediation\_types: for example ["INHERITANCE\_DRIFT"]. security\_ou: the OU key that holds the log archive and audit accounts.<br/>registered\_ous and registered\_child\_ous: OU keys to register with baseline\_arn and baseline\_version; Control Tower registers the security OU itself.<br/>create\_service\_roles: create AWSControlTowerAdmin, AWSControlTowerCloudTrailRole and AWSControlTowerStackSetRole. | <pre>object({<br/>    version              = string<br/>    manifest             = any<br/>    remediation_types    = optional(list(string), ["INHERITANCE_DRIFT"])<br/>    security_ou          = optional(string, "Security")<br/>    baseline_arn         = string<br/>    baseline_version     = optional(string, "5.0")<br/>    registered_ous       = optional(list(string), [])<br/>    registered_child_ous = optional(list(string), [])<br/>    create_service_roles = optional(bool, true)<br/>  })</pre> | `null` | no |
 | <a name="input_delegated_administrators"></a> [delegated\_administrators](#input\_delegated\_administrators) | Delegated administrators as service principal => account. The account is an account key from var.accounts or a 12-digit account ID. | `map(string)` | `{}` | no |
+| <a name="input_enable_ram_sharing_with_organization"></a> [enable\_ram\_sharing\_with\_organization](#input\_enable\_ram\_sharing\_with\_organization) | Turn on AWS RAM sharing with the Organization, so accounts can share resources such as a Transit Gateway without invitations. | `bool` | `false` | no |
 | <a name="input_enabled_policy_types"></a> [enabled\_policy\_types](#input\_enabled\_policy\_types) | Policy types to enable on the root, in addition to the types used in var.policies. Valid values: AISERVICES\_OPT\_OUT\_POLICY, BACKUP\_POLICY, BEDROCK\_POLICY, CHATBOT\_POLICY, DECLARATIVE\_POLICY\_EC2, INSPECTOR\_POLICY, RESOURCE\_CONTROL\_POLICY, S3\_POLICY, SECURITYHUB\_POLICY, SERVICE\_CONTROL\_POLICY, TAG\_POLICY, UPGRADE\_ROLLOUT\_POLICY. | `list(string)` | `[]` | no |
 | <a name="input_feature_set"></a> [feature\_set](#input\_feature\_set) | Organization feature set: ALL or CONSOLIDATED\_BILLING. Policies, delegated administrators and trusted access need ALL. | `string` | `"ALL"` | no |
 | <a name="input_organizational_units"></a> [organizational\_units](#input\_organizational\_units) | OUs keyed by a stable key. parent is the key of another OU in this map, or null for the root. name defaults to the key. OUs can nest up to 5 levels deep. | <pre>map(object({<br/>    name   = optional(string)<br/>    parent = optional(string)<br/>    tags   = optional(map(string), {})<br/>  }))</pre> | `{}` | no |
@@ -156,6 +197,8 @@ No modules.
 | ---- | ----------- |
 | <a name="output_account_ids"></a> [account\_ids](#output\_account\_ids) | Account IDs keyed by account key. |
 | <a name="output_accounts"></a> [accounts](#output\_accounts) | Accounts keyed by account key: id, arn, name, email, parent\_id and state. |
+| <a name="output_control_tower_landing_zone_arn"></a> [control\_tower\_landing\_zone\_arn](#output\_control\_tower\_landing\_zone\_arn) | ARN of the Control Tower landing zone, or null when control\_tower is null. |
+| <a name="output_control_tower_latest_available_version"></a> [control\_tower\_latest\_available\_version](#output\_control\_tower\_latest\_available\_version) | Newest landing zone version AWS offers. Compare it with control\_tower.version to plan upgrades. |
 | <a name="output_enabled_policy_types"></a> [enabled\_policy\_types](#output\_enabled\_policy\_types) | Policy types enabled on the root. |
 | <a name="output_management_account_id"></a> [management\_account\_id](#output\_management\_account\_id) | ID of the management account. |
 | <a name="output_organization_arn"></a> [organization\_arn](#output\_organization\_arn) | ARN of the Organization. |

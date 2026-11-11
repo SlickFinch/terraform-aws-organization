@@ -148,3 +148,38 @@ variable "tags" {
   type        = map(string)
   default     = {}
 }
+
+variable "enable_ram_sharing_with_organization" {
+  description = "Turn on AWS RAM sharing with the Organization, so accounts can share resources such as a Transit Gateway without invitations."
+  type        = bool
+  default     = false
+}
+
+variable "control_tower" {
+  description = <<-EOT
+    Control Tower landing zone without AFT. null (the default) leaves Control Tower off.
+    version: landing zone version, for example 4.0. manifest: the landing zone manifest as an object (it is JSON-encoded).
+    remediation_types: for example ["INHERITANCE_DRIFT"]. security_ou: the OU key that holds the log archive and audit accounts.
+    registered_ous and registered_child_ous: OU keys to register with baseline_arn and baseline_version; Control Tower registers the security OU itself.
+    create_service_roles: create AWSControlTowerAdmin, AWSControlTowerCloudTrailRole and AWSControlTowerStackSetRole.
+  EOT
+  type = object({
+    version              = string
+    manifest             = any
+    remediation_types    = optional(list(string), ["INHERITANCE_DRIFT"])
+    security_ou          = optional(string, "Security")
+    baseline_arn         = string
+    baseline_version     = optional(string, "5.0")
+    registered_ous       = optional(list(string), [])
+    registered_child_ous = optional(list(string), [])
+    create_service_roles = optional(bool, true)
+  })
+  default = null
+
+  validation {
+    condition = var.control_tower == null || alltrue([
+      for k in concat(try(var.control_tower.registered_ous, []), try(var.control_tower.registered_child_ous, [])) : contains(keys(var.organizational_units), k)
+    ])
+    error_message = "control_tower.registered_ous and registered_child_ous must be keys of organizational_units."
+  }
+}

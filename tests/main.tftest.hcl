@@ -39,6 +39,31 @@ mock_provider "aws" {
     target = aws_organizations_policy.this
     values = { id = "p-abcd1234" }
   }
+  # The nested IAM role modules need valid policy JSON.
+  override_data {
+    target = module.control_tower_admin_role[0].data.aws_iam_policy_document.this
+    values = { json = "{\"Version\":\"2012-10-17\",\"Statement\":[]}" }
+  }
+  override_data {
+    target = module.control_tower_admin_role[0].data.aws_iam_policy_document.inline
+    values = { json = "{\"Version\":\"2012-10-17\",\"Statement\":[]}" }
+  }
+  override_data {
+    target = module.control_tower_cloudtrail_role[0].data.aws_iam_policy_document.this
+    values = { json = "{\"Version\":\"2012-10-17\",\"Statement\":[]}" }
+  }
+  override_data {
+    target = module.control_tower_cloudtrail_role[0].data.aws_iam_policy_document.inline
+    values = { json = "{\"Version\":\"2012-10-17\",\"Statement\":[]}" }
+  }
+  override_data {
+    target = module.control_tower_stackset_role[0].data.aws_iam_policy_document.this
+    values = { json = "{\"Version\":\"2012-10-17\",\"Statement\":[]}" }
+  }
+  override_data {
+    target = module.control_tower_stackset_role[0].data.aws_iam_policy_document.inline
+    values = { json = "{\"Version\":\"2012-10-17\",\"Statement\":[]}" }
+  }
 }
 
 variables {
@@ -197,4 +222,123 @@ run "rejects_unknown_delegated_administrator" {
   }
 
   expect_failures = [aws_organizations_delegated_administrator.this]
+}
+
+run "control_tower_and_ram_off_by_default" {
+  command = plan
+
+  assert {
+    condition     = length(aws_controltower_landing_zone.this) == 0 && length(module.control_tower_admin_role) == 0
+    error_message = "Control Tower must be off when control_tower is null."
+  }
+
+  assert {
+    condition     = length(aws_ram_sharing_with_organization.this) == 0
+    error_message = "RAM sharing must be off by default."
+  }
+}
+
+run "ram_sharing_on" {
+  command = plan
+
+  variables {
+    enable_ram_sharing_with_organization = true
+  }
+
+  assert {
+    condition     = length(aws_ram_sharing_with_organization.this) == 1
+    error_message = "enable_ram_sharing_with_organization must turn on RAM sharing."
+  }
+}
+
+run "control_tower_on" {
+  command = plan
+
+  variables {
+    control_tower = {
+      version = "4.0"
+      manifest = {
+        governedRegions    = ["us-west-2"]
+        centralizedLogging = { enabled = true, accountId = "222222222222" }
+        config             = { enabled = true, accountId = "222222222222" }
+      }
+      baseline_arn         = "arn:aws:controltower:us-west-2::baseline/17BSJV3IGJ2QSGA2"
+      registered_ous       = ["Infrastructure", "Workloads"]
+      registered_child_ous = ["Prod", "NonProd"]
+    }
+  }
+
+  assert {
+    condition     = length(aws_controltower_landing_zone.this) == 1
+    error_message = "control_tower must create the landing zone."
+  }
+
+  assert {
+    condition     = jsondecode(aws_controltower_landing_zone.this[0].manifest_json).governedRegions == ["us-west-2"]
+    error_message = "The landing zone must use the manifest."
+  }
+
+  assert {
+    condition     = aws_controltower_landing_zone.this[0].remediation_types == toset(["INHERITANCE_DRIFT"])
+    error_message = "remediation_types must default to INHERITANCE_DRIFT."
+  }
+
+  assert {
+    condition     = toset(keys(aws_controltower_baseline.top_level_ous)) == toset(["Infrastructure", "Workloads"]) && toset(keys(aws_controltower_baseline.child_ous)) == toset(["Prod", "NonProd"])
+    error_message = "Every registered OU must get a baseline."
+  }
+
+  assert {
+    condition     = length(module.control_tower_admin_role) == 1 && length(module.control_tower_cloudtrail_role) == 1 && length(module.control_tower_stackset_role) == 1
+    error_message = "control_tower must create the three service roles."
+  }
+}
+
+run "control_tower_without_service_roles" {
+  command = plan
+
+  variables {
+    control_tower = {
+      version              = "4.0"
+      manifest             = { governedRegions = ["us-west-2"] }
+      baseline_arn         = "arn:aws:controltower:us-west-2::baseline/17BSJV3IGJ2QSGA2"
+      create_service_roles = false
+    }
+  }
+
+  assert {
+    condition     = length(module.control_tower_admin_role) == 0
+    error_message = "create_service_roles = false must skip the service roles."
+  }
+}
+
+run "rejects_log_account_outside_security_ou" {
+  command = plan
+
+  variables {
+    control_tower = {
+      version = "4.0"
+      manifest = {
+        centralizedLogging = { enabled = true, accountId = "999999999999" }
+      }
+      baseline_arn = "arn:aws:controltower:us-west-2::baseline/17BSJV3IGJ2QSGA2"
+    }
+  }
+
+  expect_failures = [aws_controltower_landing_zone.this]
+}
+
+run "rejects_unknown_registered_ou" {
+  command = plan
+
+  variables {
+    control_tower = {
+      version        = "4.0"
+      manifest       = {}
+      baseline_arn   = "arn:aws:controltower:us-west-2::baseline/17BSJV3IGJ2QSGA2"
+      registered_ous = ["Nowhere"]
+    }
+  }
+
+  expect_failures = [var.control_tower]
 }
